@@ -13,13 +13,17 @@ import {
   Filter,
   Download,
   Percent,
-  Euro 
+  Euro,
+  Lock,
+  LogOut,
+  AlertCircle
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { 
   getAuth, 
-  signInAnonymously, 
+  signInWithEmailAndPassword, // Login con contraseña
   signInWithCustomToken,
+  signOut,
   onAuthStateChanged 
 } from 'firebase/auth';
 import { 
@@ -48,7 +52,6 @@ try {
     }
   }
 } catch (e) {
-  // Si falla, ignoramos y pasamos a la configuración manual
   console.log("Modo local detectado o error leyendo config del entorno");
 }
 
@@ -71,7 +74,8 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 
-// Componentes UI (Botones, Tarjetas, Modales...)
+// --- Componentes UI ---
+
 const Card = ({ children, className = "" }) => (
   <div className={`bg-white rounded-xl shadow-sm border border-amber-100 ${className}`}>
     {children}
@@ -120,11 +124,92 @@ const Modal = ({ isOpen, onClose, title, children }) => {
   );
 };
 
+// --- Componente Login ---
+const LoginScreen = ({ onLogin }) => {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState(null);
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError(null);
+    setIsLoggingIn(true);
+    try {
+      await signInWithEmailAndPassword(auth, email, password);
+      // El onAuthStateChanged en el componente principal manejará el resto
+    } catch (err) {
+      console.error(err);
+      setError("Email o contraseña incorrectos. Inténtalo de nuevo.");
+      setIsLoggingIn(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
+      <div className="bg-white max-w-md w-full rounded-2xl shadow-xl overflow-hidden border border-amber-100">
+        <div className="bg-amber-600 p-8 text-center">
+          <div className="w-16 h-16 bg-white/20 rounded-full flex items-center justify-center mx-auto mb-4 backdrop-blur-sm">
+            <Lock className="text-white" size={32} />
+          </div>
+          <h1 className="text-2xl font-bold text-white mb-2">Muebles Industria</h1>
+          <p className="text-amber-100 text-sm">Acceso Privado al Dashboard</p>
+        </div>
+        
+        <form onSubmit={handleSubmit} className="p-8 space-y-6">
+          {error && (
+            <div className="p-3 bg-red-50 border border-red-200 rounded-lg flex items-center gap-2 text-red-700 text-sm">
+              <AlertCircle size={16} />
+              {error}
+            </div>
+          )}
+          
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-slate-700">Email Corporativo</label>
+            <input 
+              type="email" 
+              required
+              className="w-full px-4 py-3 border border-slate-200 rounded-lg focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 outline-none transition-all"
+              placeholder="nombre@mueblesindustria.com"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+            />
+          </div>
+          
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-slate-700">Contraseña</label>
+            <input 
+              type="password" 
+              required
+              className="w-full px-4 py-3 border border-slate-200 rounded-lg focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 outline-none transition-all"
+              placeholder="••••••••"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+            />
+          </div>
+
+          <button 
+            type="submit" 
+            disabled={isLoggingIn}
+            className="w-full bg-amber-600 hover:bg-amber-700 text-white font-bold py-3 rounded-lg shadow-lg shadow-amber-200 transition-all flex items-center justify-center gap-2 disabled:opacity-70"
+          >
+            {isLoggingIn ? "Accediendo..." : "Entrar al Sistema"}
+          </button>
+        </form>
+        <div className="bg-slate-50 p-4 text-center text-xs text-slate-400 border-t border-slate-100">
+          Sistema protegido por Firebase Security
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // --- Componente Principal ---
 export default function MueblesIndustriaApp() {
   const [user, setUser] = useState(null);
   const [invoices, setInvoices] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(true); // Loading inicial de auth
+  const [dataLoading, setDataLoading] = useState(true); // Loading de datos
   const [searchTerm, setSearchTerm] = useState("");
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingId, setEditingId] = useState(null);
@@ -144,41 +229,49 @@ export default function MueblesIndustriaApp() {
     notes: ''
   });
 
-  // Autenticación Robusta (Compatible con chat y local)
+  // Autenticación Robusta
   useEffect(() => {
     const initAuth = async () => {
-      try {
-        // Si hay token del chat, lo usamos (evita errores en preview)
-        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+      // Si estamos en el chat, intentamos auto-login para preview
+      if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+        try {
           await signInWithCustomToken(auth, __initial_auth_token);
-        } else {
-          // Si estamos en local, usamos anónimo
-          await signInAnonymously(auth);
+        } catch (error) {
+          console.error("Error auto-login chat:", error);
         }
-      } catch (error) {
-        console.error("Error Auth:", error);
       }
+      // Si estamos en local/prod, NO hacemos nada y esperamos al form de login
+      setLoading(false);
     };
     initAuth();
     
-    const unsubscribe = onAuthStateChanged(auth, setUser);
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+      if (currentUser) {
+        // Si hay usuario, empezamos a cargar datos
+      } else {
+        // Si no hay usuario, limpiamos datos
+        setInvoices([]);
+      }
+      setLoading(false);
+    });
     return () => unsubscribe();
   }, []);
 
-  // Carga de Datos
+  // Carga de Datos (Solo si hay usuario)
   useEffect(() => {
-    if (!user) return;
+    if (!user) {
+      setDataLoading(false);
+      return;
+    }
 
-    // Usamos 'users/{uid}/invoices' como ruta estándar para que sea compatible con tu base de datos local
-    // OJO: Si estás probando aquí, usamos una ruta segura temporal.
-    // En tu PC, como 'appIdInternal' será 'default', la ruta será limpia.
+    setDataLoading(true);
     let collectionPath;
     
-    // Detectamos si estamos en el chat para usar la ruta permitida
     if (typeof __app_id !== 'undefined') {
        collectionPath = collection(db, 'artifacts', appIdInternal, 'users', user.uid, 'invoices');
     } else {
-       // RUTA LOCAL (La que usarás en tu PC)
+       // RUTA LOCAL (Producción)
        collectionPath = collection(db, 'users', user.uid, 'invoices');
     }
     
@@ -187,17 +280,26 @@ export default function MueblesIndustriaApp() {
         const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
         data.sort((a, b) => new Date(b.date) - new Date(a.date));
         setInvoices(data);
-        setLoading(false);
+        setDataLoading(false);
       },
       (error) => {
         console.error("Firestore error:", error);
-        setLoading(false);
+        setDataLoading(false);
       }
     );
     return () => unsubscribe();
   }, [user]);
 
-  // Cálculos y Lógica (Idéntica al original)
+  // Funciones de Logout
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
+    } catch (error) {
+      console.error("Error al salir:", error);
+    }
+  };
+
+  // Cálculos y Lógica
   const stats = useMemo(() => {
     const totalInvoices = invoices.length;
     const totalAmount = invoices.reduce((acc, curr) => acc + parseFloat(curr.amount || 0), 0);
@@ -234,7 +336,6 @@ export default function MueblesIndustriaApp() {
     e.preventDefault();
     if (!user) return;
     
-    // Misma lógica de ruta para guardar
     let collectionRef;
     if (typeof __app_id !== 'undefined') {
        collectionRef = collection(db, 'artifacts', appIdInternal, 'users', user.uid, 'invoices');
@@ -255,7 +356,6 @@ export default function MueblesIndustriaApp() {
   const handleDelete = async (id) => {
     if (!user || !window.confirm("¿Estás seguro de eliminar esta factura?")) return;
     
-    // Misma lógica de ruta para borrar
     let docRef;
     if (typeof __app_id !== 'undefined') {
        docRef = doc(db, 'artifacts', appIdInternal, 'users', user.uid, 'invoices', id);
@@ -303,8 +403,16 @@ export default function MueblesIndustriaApp() {
   const formatCurrency = (amount) => new Intl.NumberFormat('es-ES', { style: 'currency', currency: 'EUR' }).format(amount);
   const getAmountColor = (val) => parseFloat(val) < 0 ? 'text-red-600 font-bold' : '';
 
-  if (loading) return <div className="h-screen flex items-center justify-center text-amber-600">Cargando Sistema...</div>;
+  // --- RENDERIZADO CONDICIONAL ---
 
+  if (loading) return <div className="h-screen flex items-center justify-center text-amber-600 animate-pulse">Cargando Sistema...</div>;
+
+  // Si no hay usuario logueado, mostramos el LOGIN
+  if (!user) {
+    return <LoginScreen />;
+  }
+
+  // Si hay usuario, mostramos el DASHBOARD
   return (
     <div className="min-h-screen bg-slate-50 font-sans text-slate-800">
       <nav className="bg-white border-b border-amber-100 px-6 py-4 sticky top-0 z-10">
@@ -313,9 +421,18 @@ export default function MueblesIndustriaApp() {
             <div className="bg-amber-600 text-white p-2 rounded-lg shadow-sm"><LayoutDashboard size={20} /></div>
             <div>
               <h1 className="text-xl font-bold text-slate-900 tracking-tight">Muebles Industria</h1>
-              <p className="text-xs text-amber-600 font-medium">Versión Escritorio</p>
+              <p className="text-xs text-amber-600 font-medium">
+                Hola, {user.email?.split('@')[0]}
+              </p>
             </div>
           </div>
+          <button 
+            onClick={handleLogout}
+            className="flex items-center gap-2 text-sm text-slate-500 hover:text-red-600 hover:bg-red-50 px-3 py-2 rounded-lg transition-colors"
+          >
+            <LogOut size={16} />
+            <span className="hidden md:inline">Cerrar Sesión</span>
+          </button>
         </div>
       </nav>
 
@@ -373,7 +490,9 @@ export default function MueblesIndustriaApp() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {filteredInvoices.length === 0 ? (
+                {dataLoading ? (
+                  <tr><td colSpan="7" className="px-6 py-12 text-center text-slate-400">Cargando facturas...</td></tr>
+                ) : filteredInvoices.length === 0 ? (
                   <tr><td colSpan="7" className="px-6 py-12 text-center text-slate-400">No hay datos</td></tr>
                 ) : (
                   filteredInvoices.map((inv) => (
@@ -397,7 +516,7 @@ export default function MueblesIndustriaApp() {
             </table>
           </div>
           {/* Footer de Tabla con Totales */}
-          {filteredInvoices.length > 0 && (
+          {!dataLoading && filteredInvoices.length > 0 && (
             <div className="px-6 py-4 border-t border-slate-100 bg-slate-50/30 text-xs text-slate-500 flex flex-col md:flex-row justify-between items-center gap-2">
               <span>{filteredInvoices.length} facturas mostradas</span>
               <div className="flex flex-col md:flex-row gap-4 text-right">
@@ -413,6 +532,7 @@ export default function MueblesIndustriaApp() {
       {/* Modal Formulario */}
       <Modal isOpen={isModalOpen} onClose={closeModal} title={editingId ? "Editar Factura" : "Nueva Factura"}>
         <form onSubmit={handleSubmit} className="space-y-4">
+          {/* ... Mismo formulario de siempre ... */}
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-1"><label className="text-xs font-medium text-slate-500 uppercase">Nº Factura</label><input required type="text" name="invoiceNumber" value={formData.invoiceNumber} onChange={handleInputChange} className="w-full px-3 py-2 border rounded-lg" /></div>
             <div className="space-y-1"><label className="text-xs font-medium text-slate-500 uppercase">Fecha</label><input required type="date" name="date" value={formData.date} onChange={handleInputChange} className="w-full px-3 py-2 border rounded-lg" /></div>
